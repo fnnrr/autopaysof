@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Employee, AttendanceRecord, Payslip } from '../types.ts';
 import { generatePayslipSummary } from '../services/geminiService.ts';
+import * as api from '../services/apiService.ts';
 import Card from './common/Card.tsx';
 import Button from './common/Button.tsx';
 import Modal from './common/Modal.tsx';
@@ -26,65 +27,72 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({ loggedInEmployee, attendanc
     if (!loggedInEmployee) return;
     
     setIsGenerating(true);
-    const now = new Date();
-    const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const year = now.getFullYear();
-    const daysInMonth = new Date(year, now.getMonth() + 1, 0).getDate();
-    
-    const workingDaysInMonth = Array.from({length: daysInMonth}, (_, i) => i + 1)
-        .map(day => new Date(year, now.getMonth(), day))
-        .filter(date => date.getDay() !== 0 && date.getDay() !== 6).length;
+    try {
+      const now = new Date();
+      const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const year = now.getFullYear();
+      const daysInMonth = new Date(year, now.getMonth() + 1, 0).getDate();
+      
+      const workingDaysInMonth = Array.from({length: daysInMonth}, (_, i) => i + 1)
+          .map(day => new Date(year, now.getMonth(), day))
+          .filter(date => date.getDay() !== 0 && date.getDay() !== 6).length;
 
-    const employeeAttendanceForMonth = attendance.filter(rec => rec.date.startsWith(monthStr));
-    
-    let totalMinutes = 0;
-    employeeAttendanceForMonth.forEach(rec => {
-        if(rec.checkIn && rec.checkOut) {
-            const checkInTime = new Date(rec.checkIn).getTime();
-            const checkOutTime = new Date(rec.checkOut).getTime();
-            totalMinutes += (checkOutTime - checkInTime) / (1000 * 60);
-        }
-    });
+      const employeeAttendanceForMonth = attendance.filter(rec => rec.date.startsWith(monthStr));
+      
+      let totalMinutes = 0;
+      employeeAttendanceForMonth.forEach(rec => {
+          if(rec.checkIn && rec.checkOut) {
+              const checkInTime = new Date(rec.checkIn).getTime();
+              const checkOutTime = new Date(rec.checkOut).getTime();
+              totalMinutes += (checkOutTime - checkInTime) / (1000 * 60);
+          }
+      });
 
-    const totalHours = totalMinutes / 60;
-    const standardMonthlyHours = workingDaysInMonth * 8;
-    const hourlyRate = loggedInEmployee.salary / standardMonthlyHours;
-    
-    const overtimeHours = Math.max(0, totalHours - standardMonthlyHours);
-    const regularHours = totalHours - overtimeHours;
+      const totalHours = totalMinutes / 60;
+      const standardMonthlyHours = workingDaysInMonth * 8;
+      const hourlyRate = loggedInEmployee.salary / standardMonthlyHours;
+      
+      const overtimeHours = Math.max(0, totalHours - standardMonthlyHours);
+      const regularHours = totalHours - overtimeHours;
 
-    const regularPay = regularHours * hourlyRate;
-    const overtimePay = overtimeHours * hourlyRate * 1.5; // 1.5x Overtime Rate
-    const netPayable = regularPay + overtimePay;
+      const regularPay = regularHours * hourlyRate;
+      const overtimePay = overtimeHours * hourlyRate * 1.5; // 1.5x Overtime Rate
+      const netPayable = regularPay + overtimePay;
 
-    const summary = await generatePayslipSummary(loggedInEmployee, netPayable, totalHours, overtimeHours);
-    
-    const newPayslip: Payslip = {
-      id: `PS-${loggedInEmployee.id}-${Date.now()}`,
-      employeeId: loggedInEmployee.id,
-      month: monthStr,
-      year,
-      monthlySalary: loggedInEmployee.salary,
-      hourlyRate,
-      totalHours,
-      overtimeHours,
-      regularPay,
-      overtimePay,
-      netPayable,
-      generatedDate: new Date().toISOString(),
-      summary
-    };
-
-    setPayslips(prev => {
-      const userPayslips = prev[loggedInEmployee.id] || [];
-      // Avoid duplicate payslips for the same month
+      const summary = await generatePayslipSummary(loggedInEmployee, netPayable, totalHours, overtimeHours);
+      
+      const newPayslip: Payslip = {
+        id: `PS-${loggedInEmployee.id}-${Date.now()}`,
+        employeeId: loggedInEmployee.id,
+        month: monthStr,
+        year,
+        monthlySalary: loggedInEmployee.salary,
+        hourlyRate,
+        totalHours,
+        overtimeHours,
+        regularPay,
+        overtimePay,
+        netPayable,
+        generatedDate: new Date().toISOString(),
+        summary
+      };
+      
+      const updatedPayslips = { ...payslips };
+      const userPayslips = updatedPayslips[loggedInEmployee.id] || [];
       const otherPayslips = userPayslips.filter(p => p.month !== monthStr);
-      return { ...prev, [loggedInEmployee.id]: [...otherPayslips, newPayslip] };
-    });
+      updatedPayslips[loggedInEmployee.id] = [...otherPayslips, newPayslip];
+      
+      await api.savePayslips(updatedPayslips); // Save to our mock API
+      setPayslips(updatedPayslips);
 
-    setSelectedPayslip(newPayslip);
-    setIsPayslipModalOpen(true);
-    setIsGenerating(false);
+      setSelectedPayslip(newPayslip);
+      setIsPayslipModalOpen(true);
+    } catch (error) {
+        console.error("Failed to generate payslip:", error);
+        alert("There was an error generating the payslip. Please try again.");
+    } finally {
+      setIsGenerating(false);
+    }
   };
   
   const currentMonthStr = `${new Date().toLocaleString('default', { month: 'long' })} ${new Date().getFullYear()}`;
@@ -111,7 +119,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({ loggedInEmployee, attendanc
             <div className="flex items-center space-x-3 bg-indigo-100 dark:bg-indigo-900/50 p-4 rounded-lg">
                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                <div>
-                {(!attendanceToday || !attendanceToday.checkIn) && <p className="font-semibold text-indigo-800 dark:text-indigo-300">Login again to clock-in.</p>}
+                {(!attendanceToday || !attendanceToday.checkIn) && <p className="font-semibold text-gray-800 dark:text-gray-300">You are not clocked in today.</p>}
                 {(attendanceToday?.checkIn && !attendanceToday.checkOut) && <p className="font-semibold text-indigo-800 dark:text-indigo-300">Clocked in at {new Date(attendanceToday.checkIn).toLocaleTimeString()}. Login again to clock-out.</p>}
                 {(attendanceToday?.checkIn && attendanceToday.checkOut) && <p className="font-semibold text-green-800 dark:text-green-300">Attendance complete for today.</p>}
                </div>

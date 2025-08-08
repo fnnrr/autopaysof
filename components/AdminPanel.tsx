@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Employee, AttendanceRecord, Payslip, Role } from '../types.ts';
+import * as api from '../services/apiService.ts';
 import Card from './common/Card.tsx';
 import Input from './common/Input.tsx';
 import Button from './common/Button.tsx';
@@ -20,76 +21,61 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, se
   const [salary, setSalary] = useState('');
   const [role, setRole] = useState<Role>('Employee');
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
   
   const [isSalaryModalOpen, setIsSalaryModalOpen] = useState(false);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
   const [newSalary, setNewSalary] = useState('');
+  const [isUpdatingSalary, setIsUpdatingSalary] = useState(false);
 
   const availableRoles: Role[] = loggedInEmployee.role === 'Admin' 
     ? ['Admin', 'Clerk', 'Employee']
     : ['Clerk', 'Employee'];
 
-  const handleRegister = (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !salary || parseFloat(salary) <= 0) {
       setError('Please provide a valid name and a positive salary.');
       return;
     }
-
-    const generateUniqueId = (role: Role, allEmployees: Employee[]): string => {
-        const prefixMap: Record<Role, string> = {
-            Admin: 'ADM',
-            Clerk: 'CLK',
-            Employee: 'EMP',
-        };
-        const prefix = prefixMap[role];
-
-        const relevantEmployees = allEmployees.filter(emp => emp.id.startsWith(prefix + '-'));
-        
-        let maxId = 0;
-        if (relevantEmployees.length > 0) {
-            maxId = Math.max(
-                ...relevantEmployees.map(emp => {
-                    const numPart = emp.id.split('-')[1];
-                    return numPart ? parseInt(numPart, 10) : 0;
-                })
-            );
-        }
-        
-        const newIdNumber = maxId + 1;
-        const paddedId = String(newIdNumber).padStart(5, '0');
-        
-        return `${prefix}-${paddedId}`;
-    };
-
-    const newEmployee: Employee = {
-      id: generateUniqueId(role, employees),
-      name: name.trim(),
-      salary: parseFloat(salary),
-      registrationDate: new Date().toISOString(),
-      role: role,
-    };
-    setEmployees(prev => [...prev, newEmployee].sort((a,b) => a.name.localeCompare(b.name)));
-    setName('');
-    setSalary('');
-    setRole('Employee');
+    
+    setIsLoading(true);
     setError('');
+
+    try {
+        const newEmployee = await api.addEmployee(name.trim(), parseFloat(salary), role);
+        setEmployees(prev => [...prev, newEmployee].sort((a,b) => a.name.localeCompare(b.name)));
+        setName('');
+        setSalary('');
+        setRole('Employee');
+    } catch(err) {
+        setError(err instanceof Error ? err.message : 'Failed to register user.');
+    } finally {
+        setIsLoading(false);
+    }
   };
 
-  const handleRemove = (employeeId: string) => {
+  const handleRemove = async (employeeId: string) => {
     if (window.confirm('Are you sure you want to remove this employee and all their data? This action cannot be undone.')) {
-        setEmployees(prev => prev.filter(emp => emp.id !== employeeId));
-        setAttendance(prev => {
-            const newAttendance = {...prev};
-            delete newAttendance[employeeId];
-            return newAttendance;
-        });
-        setPayslips(prev => {
-            const newPayslips = {...prev};
-            delete newPayslips[employeeId];
-            return newPayslips;
-        })
+        try {
+            await api.removeEmployee(employeeId);
+            setEmployees(prev => prev.filter(emp => emp.id !== employeeId));
+            
+            // Optimistically update attendance and payslips on the UI
+            setAttendance(prev => {
+                const newAttendance = {...prev};
+                delete newAttendance[employeeId];
+                return newAttendance;
+            });
+            setPayslips(prev => {
+                const newPayslips = {...prev};
+                delete newPayslips[employeeId];
+                return newPayslips;
+            });
+        } catch(err) {
+            alert(err instanceof Error ? err.message : 'Failed to remove user.');
+        }
     }
   };
 
@@ -104,14 +90,22 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, se
     setIsDetailsModalOpen(true);
   }
 
-  const handleSalaryUpdate = () => {
+  const handleSalaryUpdate = async () => {
     if (selectedEmployee && newSalary && parseFloat(newSalary) > 0) {
-        setEmployees(prev => prev.map(emp => 
-            emp.id === selectedEmployee.id ? { ...emp, salary: parseFloat(newSalary) } : emp
-        ));
-        setIsSalaryModalOpen(false);
-        setSelectedEmployee(null);
-        setNewSalary('');
+        setIsUpdatingSalary(true);
+        try {
+            const updatedEmployee = await api.updateEmployeeSalary(selectedEmployee.id, parseFloat(newSalary));
+            setEmployees(prev => prev.map(emp => 
+                emp.id === selectedEmployee.id ? updatedEmployee : emp
+            ));
+            setIsSalaryModalOpen(false);
+            setSelectedEmployee(null);
+            setNewSalary('');
+        } catch(err) {
+             alert(err instanceof Error ? err.message : 'Failed to update salary.');
+        } finally {
+            setIsUpdatingSalary(false);
+        }
     }
   };
   
@@ -133,7 +127,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, se
           </div>
           <Input id="employeeSalary" label="Monthly Salary ($)" type="number" value={salary} onChange={e => setSalary(e.target.value)} placeholder="e.g., 5000" min="0.01" step="0.01" required />
           {error && <p className="text-red-500 text-sm">{error}</p>}
-          <Button type="submit" className="w-full">Register User</Button>
+          <Button type="submit" className="w-full" disabled={isLoading}>{isLoading ? 'Registering...' : 'Register User'}</Button>
         </form>
       </Card>
 
@@ -181,7 +175,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, se
                 <Input id="newSalary" label="New Monthly Salary ($)" type="number" value={newSalary} onChange={(e) => setNewSalary(e.target.value)} min="0.01" step="0.01" required />
                 <div className="flex justify-end space-x-2">
                     <Button variant="secondary" onClick={() => setIsSalaryModalOpen(false)}>Cancel</Button>
-                    <Button onClick={handleSalaryUpdate}>Update Salary</Button>
+                    <Button onClick={handleSalaryUpdate} disabled={isUpdatingSalary}>{isUpdatingSalary ? 'Updating...' : 'Update Salary'}</Button>
                 </div>
             </div>
         </Modal>
@@ -199,6 +193,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, se
                     <span>{rec.checkIn && !rec.checkOut ? `Clocked In @ ${new Date(rec.checkIn).toLocaleTimeString()}`: "Completed"}</span>
                   </li>
                 ))}
+                {(attendance[selectedEmployee.id] || []).length === 0 && <li className="text-gray-400">No attendance records found.</li>}
               </ul>
             </div>
              <div>
@@ -210,6 +205,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, se
                     <span className="font-mono">${p.netPayable.toFixed(2)}</span>
                   </li>
                 ))}
+                {(payslips[selectedEmployee.id] || []).length === 0 && <li className="text-gray-400">No payslips found.</li>}
               </ul>
             </div>
             <div className="flex justify-end">
