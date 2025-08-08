@@ -9,6 +9,8 @@ export interface Employee {
 }
 
 export interface AttendanceRecord {
+  id?: number; // Optional since it's a SERIAL in the DB
+  employeeId: string;
   date: string; // YYYY-MM-DD
   checkIn: string; // ISO String
   checkOut?: string; // ISO String
@@ -28,4 +30,10 @@ export interface Payslip {
   netPayable: number; // This is gross pay as deductions are 0
   generatedDate: string;
   summary: string;
+}
+
+export interface AllData {
+    employees: Employee[];
+    attendance: Record<string, AttendanceRecord[]>;
+    payslips: Record<string, Payslip[]>;
 }

@@ -8,25 +8,28 @@ import Input from './components/common/Input.tsx';
 import Button from './components/common/Button.tsx';
 import Card from './components/common/Card.tsx';
 
-const Notification: React.FC<{ message: string }> = ({ message }) => (
-  <div className="fixed top-5 right-5 bg-green-500 text-white py-2 px-4 rounded-lg shadow-lg z-50 animate-fade-in-out">
-    {message}
-    <style>{`
-      @keyframes fade-in-out {
-        0% { opacity: 0; transform: translateY(-20px); }
-        10% { opacity: 1; transform: translateY(0); }
-        90% { opacity: 1; transform: translateY(0); }
-        100% { opacity: 0; transform: translateY(-20px); }
-      }
-      .animate-fade-in-out {
-        animation: fade-in-out 4s ease-in-out;
-      }
-    `}</style>
-  </div>
-);
+const Notification: React.FC<{ message: string, type?: 'success' | 'error' }> = ({ message, type = 'success' }) => {
+  const bgColor = type === 'success' ? 'bg-green-500' : 'bg-red-500';
+  return (
+    <div className={`fixed top-5 right-5 ${bgColor} text-white py-2 px-4 rounded-lg shadow-lg z-50 animate-fade-in-out`}>
+      {message}
+      <style>{`
+        @keyframes fade-in-out {
+          0% { opacity: 0; transform: translateY(-20px); }
+          10% { opacity: 1; transform: translateY(0); }
+          90% { opacity: 1; transform: translateY(0); }
+          100% { opacity: 0; transform: translateY(-20px); }
+        }
+        .animate-fade-in-out {
+          animation: fade-in-out 4s ease-in-out;
+        }
+      `}</style>
+    </div>
+  );
+};
 
 const FirstAdminSetup: React.FC<{
-  onAdminCreated: (admin: Employee) => void;
+  onAdminCreated: () => void;
 }> = ({ onAdminCreated }) => {
   const [name, setName] = useState('');
   const [salary, setSalary] = useState('');
@@ -42,8 +45,8 @@ const FirstAdminSetup: React.FC<{
     setIsLoading(true);
     setError('');
     try {
-      const newAdmin = await api.addFirstAdmin(name.trim(), parseFloat(salary));
-      onAdminCreated(newAdmin);
+      await api.addEmployee(name.trim(), parseFloat(salary), 'Admin');
+      onAdminCreated();
     } catch (err) {
         setError(err instanceof Error ? err.message : 'An unknown error occurred.');
         setIsLoading(false);
@@ -69,9 +72,8 @@ const FirstAdminSetup: React.FC<{
 const LoginView: React.FC<{
   employees: Employee[];
   setLoggedInEmployee: React.Dispatch<React.SetStateAction<Employee | null>>;
-  onClockEvent: (employee: Employee) => Promise<void>;
-  setNotification: React.Dispatch<React.SetStateAction<string>>;
-}> = ({ employees, setLoggedInEmployee, onClockEvent, setNotification }) => {
+  onLogin: (employee: Employee) => Promise<void>;
+}> = ({ employees, setLoggedInEmployee, onLogin }) => {
   const [employeeId, setEmployeeId] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -84,18 +86,12 @@ const LoginView: React.FC<{
     const employee = employees.find(emp => emp.id.toUpperCase() === employeeId.trim().toUpperCase());
     
     if (employee) {
-      if (employee.role === 'Employee') {
-        try {
-          await onClockEvent(employee);
-        } catch(e) {
-            if (e instanceof Error) setNotification(e.message);
-        }
-      }
+      await onLogin(employee);
       setLoggedInEmployee(employee);
     } else {
       setError('Employee ID not found. Please try again.');
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
   
   return (
@@ -133,21 +129,24 @@ const App: React.FC = () => {
   const [isInitialSetup, setIsInitialSetup] = useState(false);
   
   const [notification, setNotification] = useState('');
+  const [notificationType, setNotificationType] = useState<'success' | 'error'>('success');
+
   useEffect(() => {
     if (notification) {
       const timer = setTimeout(() => setNotification(''), 4000);
       return () => clearTimeout(timer);
     }
   }, [notification]);
+  
+  const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
+    setNotification(message);
+    setNotificationType(type);
+  }
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-        const [empData, attData, payData] = await Promise.all([
-            api.getEmployees(),
-            api.getAttendance(),
-            api.getPayslips()
-        ]);
+        const { employees: empData, attendance: attData, payslips: payData } = await api.getAllData();
         setEmployees(empData);
         setAttendance(attData);
         setPayslips(payData);
@@ -156,7 +155,7 @@ const App: React.FC = () => {
         }
     } catch (error) {
         console.error("Failed to load data:", error);
-        setNotification("Error: Could not load application data.");
+        showNotification("Error: Could not load application data.", "error");
     } finally {
         setIsLoading(false);
     }
@@ -166,32 +165,47 @@ const App: React.FC = () => {
     loadData();
   }, [loadData]);
 
-  const handleAdminCreated = (admin: Employee) => {
-    setEmployees([admin]);
-    setLoggedInEmployee(admin);
+  const handleAdminCreated = () => {
     setIsInitialSetup(false);
+    showNotification('Admin account created successfully! Please log in.', 'success');
+    loadData();
   };
   
-  const handleClockEvent = async (employee: Employee) => {
+  const handleLogin = async (employee: Employee) => {
+    if (employee.role !== 'Employee') {
+      return;
+    }
       const todayStr = new Date().toISOString().split('T')[0];
       const userAttendance = attendance[employee.id] || [];
       const todayRecord = userAttendance.find(r => r.date === todayStr);
 
-      let updatedAttendance;
-      if (!todayRecord) {
-        // Clock In
-        setNotification('You have been successfully clocked in for the day.');
-        updatedAttendance = { ...attendance, [employee.id]: [...userAttendance, { date: todayStr, checkIn: new Date().toISOString() }] };
-      } else if (todayRecord.checkIn && !todayRecord.checkOut) {
-        // Clock Out
-        setNotification('You have been successfully clocked out. Your hours are recorded.');
-        const updatedRecords = userAttendance.map(r => r.date === todayStr ? { ...r, checkOut: new Date().toISOString() } : r);
-        updatedAttendance = { ...attendance, [employee.id]: updatedRecords };
-      } else {
-         throw new Error('Your attendance for today has already been recorded.');
+      if (todayRecord?.checkIn && todayRecord?.checkOut) {
+         showNotification('Your attendance for today has already been recorded.', 'success');
+         return;
       }
-      await api.saveAttendance(updatedAttendance);
-      setAttendance(updatedAttendance);
+      
+      const isClockingIn = !todayRecord?.checkIn;
+      try {
+        const recordToUpdate = {
+          employeeId: employee.id,
+          date: todayStr,
+          checkIn: todayRecord?.checkIn || new Date().toISOString(),
+          checkOut: isClockingIn ? undefined : new Date().toISOString(),
+        };
+        await api.upsertAttendanceRecord(recordToUpdate);
+        
+        if (isClockingIn) {
+            showNotification('You have been successfully clocked in.', 'success');
+        } else {
+            showNotification('You have been successfully clocked out.', 'success');
+        }
+        loadData(); // Reload data to get the latest attendance
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Clock event failed.';
+        showNotification(message, 'error');
+        // If login fails, don't set user
+        throw err;
+      }
   };
   
   const handleLogout = () => {
@@ -216,12 +230,11 @@ const App: React.FC = () => {
   if (!loggedInEmployee) {
     return (
         <div className="bg-gray-100 dark:bg-gray-900">
-            {notification && <Notification message={notification} />}
+            {notification && <Notification message={notification} type={notificationType} />}
             <LoginView 
                 employees={employees} 
                 setLoggedInEmployee={setLoggedInEmployee}
-                onClockEvent={handleClockEvent}
-                setNotification={setNotification}
+                onLogin={handleLogin}
             />
         </div>
     );
@@ -229,25 +242,25 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans">
-      {notification && <Notification message={notification} />}
+      {notification && <Notification message={notification} type={notificationType} />}
       <Header loggedInEmployee={loggedInEmployee} onLogout={handleLogout} />
       <main className="p-4 sm:p-6 lg:p-8">
         {(loggedInEmployee.role === 'Admin' || loggedInEmployee.role === 'Clerk') ? (
           <AdminPanel
             loggedInEmployee={loggedInEmployee}
             employees={employees}
-            setEmployees={setEmployees}
             attendance={attendance}
-            setAttendance={setAttendance}
             payslips={payslips}
-            setPayslips={setPayslips}
+            refreshData={loadData}
+            showNotification={showNotification}
           />
         ) : (
           <EmployeeView
             loggedInEmployee={loggedInEmployee}
             attendance={attendance[loggedInEmployee.id] || []}
-            payslips={payslips}
-            setPayslips={setPayslips}
+            payslips={payslips[loggedInEmployee.id] || []}
+            refreshData={loadData}
+            showNotification={showNotification}
           />
         )}
       </main>

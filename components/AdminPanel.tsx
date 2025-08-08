@@ -9,14 +9,13 @@ import Modal from './common/Modal.tsx';
 interface AdminPanelProps {
   loggedInEmployee: Employee;
   employees: Employee[];
-  setEmployees: React.Dispatch<React.SetStateAction<Employee[]>>;
   attendance: Record<string, AttendanceRecord[]>;
-  setAttendance: React.Dispatch<React.SetStateAction<Record<string, AttendanceRecord[]>>>;
   payslips: Record<string, Payslip[]>;
-  setPayslips: React.Dispatch<React.SetStateAction<Record<string, Payslip[]>>>;
+  refreshData: () => void;
+  showNotification: (message: string, type?: 'success' | 'error') => void;
 }
 
-const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, setEmployees, attendance, setAttendance, payslips, setPayslips }) => {
+const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, attendance, payslips, refreshData, showNotification }) => {
   const [name, setName] = useState('');
   const [salary, setSalary] = useState('');
   const [role, setRole] = useState<Role>('Employee');
@@ -44,37 +43,30 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, se
     setError('');
 
     try {
-        const newEmployee = await api.addEmployee(name.trim(), parseFloat(salary), role);
-        setEmployees(prev => [...prev, newEmployee].sort((a,b) => a.name.localeCompare(b.name)));
+        await api.addEmployee(name.trim(), parseFloat(salary), role);
+        showNotification(`User ${name.trim()} registered successfully.`, 'success');
+        refreshData();
         setName('');
         setSalary('');
         setRole('Employee');
     } catch(err) {
-        setError(err instanceof Error ? err.message : 'Failed to register user.');
+        const message = err instanceof Error ? err.message : 'Failed to register user.';
+        setError(message);
+        showNotification(message, 'error');
     } finally {
         setIsLoading(false);
     }
   };
 
-  const handleRemove = async (employeeId: string) => {
-    if (window.confirm('Are you sure you want to remove this employee and all their data? This action cannot be undone.')) {
+  const handleRemove = async (employeeId: string, employeeName: string) => {
+    if (window.confirm(`Are you sure you want to remove ${employeeName}? This will delete all associated attendance and payslip records permanently.`)) {
         try {
             await api.removeEmployee(employeeId);
-            setEmployees(prev => prev.filter(emp => emp.id !== employeeId));
-            
-            // Optimistically update attendance and payslips on the UI
-            setAttendance(prev => {
-                const newAttendance = {...prev};
-                delete newAttendance[employeeId];
-                return newAttendance;
-            });
-            setPayslips(prev => {
-                const newPayslips = {...prev};
-                delete newPayslips[employeeId];
-                return newPayslips;
-            });
+            showNotification(`Employee ${employeeName} has been removed.`, 'success');
+            refreshData();
         } catch(err) {
-            alert(err instanceof Error ? err.message : 'Failed to remove user.');
+            const message = err instanceof Error ? err.message : 'Failed to remove user.';
+            showNotification(message, 'error');
         }
     }
   };
@@ -94,15 +86,15 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, se
     if (selectedEmployee && newSalary && parseFloat(newSalary) > 0) {
         setIsUpdatingSalary(true);
         try {
-            const updatedEmployee = await api.updateEmployeeSalary(selectedEmployee.id, parseFloat(newSalary));
-            setEmployees(prev => prev.map(emp => 
-                emp.id === selectedEmployee.id ? updatedEmployee : emp
-            ));
+            await api.updateEmployeeSalary(selectedEmployee.id, parseFloat(newSalary));
+            showNotification(`Salary updated for ${selectedEmployee.name}.`, 'success');
+            refreshData();
             setIsSalaryModalOpen(false);
             setSelectedEmployee(null);
             setNewSalary('');
         } catch(err) {
-             alert(err instanceof Error ? err.message : 'Failed to update salary.');
+             const message = err instanceof Error ? err.message : 'Failed to update salary.';
+             showNotification(message, 'error');
         } finally {
             setIsUpdatingSalary(false);
         }
@@ -110,6 +102,26 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, se
   };
   
   const sortedEmployees = [...employees].sort((a, b) => a.name.localeCompare(b.name));
+
+  const getAttendanceStatus = (rec: AttendanceRecord) => {
+    if (rec.checkIn && rec.checkOut) {
+        const checkIn = new Date(rec.checkIn);
+        const checkOut = new Date(rec.checkOut);
+        const durationMs = checkOut.getTime() - checkIn.getTime();
+        const hours = Math.floor(durationMs / 3600000);
+        const minutes = Math.floor((durationMs % 3600000) / 60000);
+        return (
+            <div className="text-right">
+                <p>In: {checkIn.toLocaleTimeString()} | Out: {checkOut.toLocaleTimeString()}</p>
+                <p className="text-xs text-gray-400">Duration: {hours}h {minutes}m</p>
+            </div>
+        );
+    }
+    if (rec.checkIn) {
+        return <span>Clocked In @ {new Date(rec.checkIn).toLocaleTimeString()}</span>;
+    }
+    return <span className="text-gray-400">Invalid record</span>;
+  };
 
   return (
     <div className="space-y-8">
@@ -155,7 +167,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, se
                       {loggedInEmployee.role === 'Admin' && (
                         <>
                           <Button onClick={() => openSalaryModal(emp)} variant="secondary" size="sm">Edit Salary</Button>
-                          <Button onClick={() => handleRemove(emp.id)} variant="danger" size="sm">Remove</Button>
+                          <Button onClick={() => handleRemove(emp.id, emp.name)} variant="danger" size="sm">Remove</Button>
                         </>
                       )}
                     </td>
@@ -186,11 +198,11 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ loggedInEmployee, employees, se
           <div className="space-y-6">
             <div>
               <h4 className="font-semibold text-lg mb-2">Recent Attendance</h4>
-              <ul className="max-h-48 overflow-y-auto space-y-1 text-sm border p-2 rounded-md bg-gray-50 dark:bg-gray-700">
+              <ul className="max-h-48 overflow-y-auto space-y-2 text-sm border p-2 rounded-md bg-gray-50 dark:bg-gray-700">
                 {(attendance[selectedEmployee.id] || []).slice(-10).reverse().map(rec => (
-                  <li key={rec.date} className="flex justify-between">
+                  <li key={rec.date} className="flex justify-between items-center">
                     <span>{rec.date}:</span>
-                    <span>{rec.checkIn && !rec.checkOut ? `Clocked In @ ${new Date(rec.checkIn).toLocaleTimeString()}`: "Completed"}</span>
+                    {getAttendanceStatus(rec)}
                   </li>
                 ))}
                 {(attendance[selectedEmployee.id] || []).length === 0 && <li className="text-gray-400">No attendance records found.</li>}

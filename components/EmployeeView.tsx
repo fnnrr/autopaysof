@@ -9,11 +9,12 @@ import Modal from './common/Modal.tsx';
 interface EmployeeViewProps {
   loggedInEmployee: Employee;
   attendance: AttendanceRecord[];
-  payslips: Record<string, Payslip[]>;
-  setPayslips: React.Dispatch<React.SetStateAction<Record<string, Payslip[]>>>;
+  payslips: Payslip[];
+  refreshData: () => void;
+  showNotification: (message: string, type?: 'success' | 'error') => void;
 }
 
-const EmployeeView: React.FC<EmployeeViewProps> = ({ loggedInEmployee, attendance, payslips, setPayslips }) => {
+const EmployeeView: React.FC<EmployeeViewProps> = ({ loggedInEmployee, attendance, payslips, refreshData, showNotification }) => {
   const [isPayslipModalOpen, setIsPayslipModalOpen] = useState(false);
   const [selectedPayslip, setSelectedPayslip] = useState<Payslip | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -77,26 +78,40 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({ loggedInEmployee, attendanc
         summary
       };
       
-      const updatedPayslips = { ...payslips };
-      const userPayslips = updatedPayslips[loggedInEmployee.id] || [];
-      const otherPayslips = userPayslips.filter(p => p.month !== monthStr);
-      updatedPayslips[loggedInEmployee.id] = [...otherPayslips, newPayslip];
-      
-      await api.savePayslips(updatedPayslips); // Save to our mock API
-      setPayslips(updatedPayslips);
+      const savedPayslip = await api.addOrUpdatePayslip(newPayslip);
+      showNotification('Payslip has been successfully generated!', 'success');
+      refreshData();
 
-      setSelectedPayslip(newPayslip);
+      setSelectedPayslip(savedPayslip);
       setIsPayslipModalOpen(true);
     } catch (error) {
+        const message = error instanceof Error ? error.message : "There was an error generating the payslip.";
         console.error("Failed to generate payslip:", error);
-        alert("There was an error generating the payslip. Please try again.");
+        showNotification(message, 'error');
     } finally {
       setIsGenerating(false);
     }
   };
   
   const currentMonthStr = `${new Date().toLocaleString('default', { month: 'long' })} ${new Date().getFullYear()}`;
-  const employeePayslips = payslips[loggedInEmployee.id] || [];
+  
+  const getTodaysStatusContent = () => {
+    if (!attendanceToday?.checkIn) {
+      return <p className="font-semibold text-gray-800 dark:text-gray-300">You are not clocked in today.</p>;
+    }
+    if (attendanceToday.checkIn && !attendanceToday.checkOut) {
+      return <p className="font-semibold text-indigo-800 dark:text-indigo-300">Clocked in at {new Date(attendanceToday.checkIn).toLocaleTimeString()}. Login again to clock-out.</p>;
+    }
+    // Both checkIn and checkOut exist
+    return (
+        <div>
+            <p className="font-semibold text-green-800 dark:text-green-300">Attendance complete for today.</p>
+            <p className="text-xs text-gray-600 dark:text-gray-400">
+                In: {new Date(attendanceToday.checkIn).toLocaleTimeString()} | Out: {new Date(attendanceToday.checkOut).toLocaleTimeString()}
+            </p>
+        </div>
+    );
+  };
 
   return (
     <div className="space-y-8">
@@ -119,9 +134,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({ loggedInEmployee, attendanc
             <div className="flex items-center space-x-3 bg-indigo-100 dark:bg-indigo-900/50 p-4 rounded-lg">
                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                <div>
-                {(!attendanceToday || !attendanceToday.checkIn) && <p className="font-semibold text-gray-800 dark:text-gray-300">You are not clocked in today.</p>}
-                {(attendanceToday?.checkIn && !attendanceToday.checkOut) && <p className="font-semibold text-indigo-800 dark:text-indigo-300">Clocked in at {new Date(attendanceToday.checkIn).toLocaleTimeString()}. Login again to clock-out.</p>}
-                {(attendanceToday?.checkIn && attendanceToday.checkOut) && <p className="font-semibold text-green-800 dark:text-green-300">Attendance complete for today.</p>}
+                {getTodaysStatusContent()}
                </div>
             </div>
         </Card>
@@ -132,7 +145,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({ loggedInEmployee, attendanc
         <Button onClick={handleGeneratePayslip} disabled={isGenerating} className="mb-4">
           {isGenerating ? 'Generating...' : `Generate/Update Payslip for ${currentMonthStr}`}
         </Button>
-         {employeePayslips.length > 0 ? (
+         {payslips.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
               <thead className="bg-gray-50 dark:bg-gray-700">
@@ -144,7 +157,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({ loggedInEmployee, attendanc
                 </tr>
               </thead>
               <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                {employeePayslips.sort((a,b) => new Date(b.generatedDate).getTime() - new Date(a.generatedDate).getTime()).map(p => (
+                {payslips.sort((a,b) => new Date(b.generatedDate).getTime() - new Date(a.generatedDate).getTime()).map(p => (
                   <tr key={p.id}>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{p.month}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-mono">${p.netPayable.toFixed(2)}</td>
@@ -172,7 +185,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({ loggedInEmployee, attendanc
                     <h4 className="font-semibold text-lg mb-2">Pay Breakdown</h4>
                     <div className="space-y-1 text-sm">
                         <div className="flex justify-between"><span className="text-gray-500 dark:text-gray-400">Base Monthly Salary:</span> <strong>${selectedPayslip.monthlySalary.toFixed(2)}</strong></div>
-                        <div className="flex justify-between"><span className="text-gray-500 dark:text-gray-400">Calculated Hourly Rate:</span> <strong>${selectedPayslip.hourlyRate.toFixed(2)}/hr</strong></div>
+                        <div className="flex justify-between"><span className="text-gray-500 dark:text-gray-400">Calculated Hourly Rate:</span> <strong>${selectedPayslip.hourlyRate.toFixed(4)}/hr</strong></div>
                         <div className="flex justify-between"><span className="text-gray-500 dark:text-gray-400">Total Hours Worked:</span> <strong>{selectedPayslip.totalHours.toFixed(2)} hrs</strong></div>
                          <div className="flex justify-between"><span className="text-gray-500 dark:text-gray-400">Overtime Hours:</span> <strong>{selectedPayslip.overtimeHours.toFixed(2)} hrs</strong></div>
                         <div className="flex justify-between"><span className="text-gray-500 dark:text-gray-400">Regular Pay:</span> <strong>${selectedPayslip.regularPay.toFixed(2)}</strong></div>
