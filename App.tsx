@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { useLocalStorage } from './hooks/useLocalStorage.ts';
-import { Employee, AttendanceRecord, Payslip, Role } from './types.ts';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Employee, AttendanceRecord, Payslip } from './types.ts';
+import * as api from './services/apiService.ts';
 import AdminPanel from './components/AdminPanel.tsx';
 import EmployeeView from './components/EmployeeView.tsx';
 import Header from './components/Header.tsx';
@@ -26,28 +26,28 @@ const Notification: React.FC<{ message: string }> = ({ message }) => (
 );
 
 const FirstAdminSetup: React.FC<{
-  setEmployees: React.Dispatch<React.SetStateAction<Employee[]>>;
-  setLoggedInEmployee: React.Dispatch<React.SetStateAction<Employee | null>>;
-}> = ({ setEmployees, setLoggedInEmployee }) => {
+  onAdminCreated: (admin: Employee) => void;
+}> = ({ onAdminCreated }) => {
   const [name, setName] = useState('');
   const [salary, setSalary] = useState('');
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleRegister = (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !salary || parseFloat(salary) <= 0) {
       setError('Please provide a valid name and a positive salary.');
       return;
     }
-    const newAdmin: Employee = {
-      id: 'ADM-00001',
-      name: name.trim(),
-      salary: parseFloat(salary),
-      registrationDate: new Date().toISOString(),
-      role: 'Admin',
-    };
-    setEmployees([newAdmin]);
-    setLoggedInEmployee(newAdmin);
+    setIsLoading(true);
+    setError('');
+    try {
+      const newAdmin = await api.addFirstAdmin(name.trim(), parseFloat(salary));
+      onAdminCreated(newAdmin);
+    } catch (err) {
+        setError(err instanceof Error ? err.message : 'An unknown error occurred.');
+        setIsLoading(false);
+    }
   };
 
   return (
@@ -59,7 +59,7 @@ const FirstAdminSetup: React.FC<{
           <Input id="adminName" label="Full Name" type="text" value={name} onChange={e => setName(e.target.value)} required />
           <Input id="adminSalary" label="Monthly Salary ($)" type="number" value={salary} onChange={e => setSalary(e.target.value)} required min="1" />
           {error && <p className="text-red-500 text-sm">{error}</p>}
-          <Button type="submit" className="w-full">Create Admin Account</Button>
+          <Button type="submit" className="w-full" disabled={isLoading}>{isLoading ? 'Creating Account...' : 'Create Admin Account'}</Button>
         </form>
       </Card>
     </div>
@@ -69,42 +69,33 @@ const FirstAdminSetup: React.FC<{
 const LoginView: React.FC<{
   employees: Employee[];
   setLoggedInEmployee: React.Dispatch<React.SetStateAction<Employee | null>>;
-  setAttendance: React.Dispatch<React.SetStateAction<Record<string, AttendanceRecord[]>>>;
+  onClockEvent: (employee: Employee) => Promise<void>;
   setNotification: React.Dispatch<React.SetStateAction<string>>;
-}> = ({ employees, setLoggedInEmployee, setAttendance, setNotification }) => {
+}> = ({ employees, setLoggedInEmployee, onClockEvent, setNotification }) => {
   const [employeeId, setEmployeeId] = useState('');
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsLoading(true);
+    setError('');
+    
     const employee = employees.find(emp => emp.id.toUpperCase() === employeeId.trim().toUpperCase());
+    
     if (employee) {
       if (employee.role === 'Employee') {
-        const todayStr = new Date().toISOString().split('T')[0];
-        setAttendance(prev => {
-          const userAttendance = prev[employee.id] || [];
-          const todayRecord = userAttendance.find(r => r.date === todayStr);
-
-          if (!todayRecord) {
-            // Clock In
-            setNotification('You have been successfully clocked in for the day.');
-            return { ...prev, [employee.id]: [...userAttendance, { date: todayStr, checkIn: new Date().toISOString() }] };
-          } else if (todayRecord.checkIn && !todayRecord.checkOut) {
-            // Clock Out
-            setNotification('You have been successfully clocked out. Your hours are recorded.');
-            const updatedAttendance = userAttendance.map(r => r.date === todayStr ? { ...r, checkOut: new Date().toISOString() } : r);
-            return { ...prev, [employee.id]: updatedAttendance };
-          } else {
-             setNotification('Your attendance for today has already been recorded.');
-          }
-          return prev;
-        });
+        try {
+          await onClockEvent(employee);
+        } catch(e) {
+            if (e instanceof Error) setNotification(e.message);
+        }
       }
       setLoggedInEmployee(employee);
-      setError('');
     } else {
       setError('Employee ID not found. Please try again.');
     }
+    setIsLoading(false);
   };
   
   return (
@@ -122,11 +113,11 @@ const LoginView: React.FC<{
               type="text"
               value={employeeId}
               onChange={e => setEmployeeId(e.target.value)}
-              placeholder="e.g., EMP-12345"
+              placeholder="e.g., EMP-00001"
               required
             />
             {error && <p className="text-red-500 text-sm text-center">{error}</p>}
-            <Button type="submit" className="w-full">Login / Record Time</Button>
+            <Button type="submit" className="w-full" disabled={isLoading}>{isLoading ? 'Logging in...' : 'Login / Record Time'}</Button>
           </form>
         </Card>
       </div>
@@ -134,10 +125,12 @@ const LoginView: React.FC<{
 };
 
 const App: React.FC = () => {
-  const [employees, setEmployees] = useLocalStorage<Employee[]>('employees', []);
-  const [attendance, setAttendance] = useLocalStorage<Record<string, AttendanceRecord[]>>('attendance', {});
-  const [payslips, setPayslips] = useLocalStorage<Record<string, Payslip[]>>('payslips', {});
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [attendance, setAttendance] = useState<Record<string, AttendanceRecord[]>>({});
+  const [payslips, setPayslips] = useState<Record<string, Payslip[]>>({});
   const [loggedInEmployee, setLoggedInEmployee] = useState<Employee | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isInitialSetup, setIsInitialSetup] = useState(false);
   
   const [notification, setNotification] = useState('');
   useEffect(() => {
@@ -147,12 +140,77 @@ const App: React.FC = () => {
     }
   }, [notification]);
 
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    try {
+        const [empData, attData, payData] = await Promise.all([
+            api.getEmployees(),
+            api.getAttendance(),
+            api.getPayslips()
+        ]);
+        setEmployees(empData);
+        setAttendance(attData);
+        setPayslips(payData);
+        if (empData.length === 0) {
+            setIsInitialSetup(true);
+        }
+    } catch (error) {
+        console.error("Failed to load data:", error);
+        setNotification("Error: Could not load application data.");
+    } finally {
+        setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const handleAdminCreated = (admin: Employee) => {
+    setEmployees([admin]);
+    setLoggedInEmployee(admin);
+    setIsInitialSetup(false);
+  };
+  
+  const handleClockEvent = async (employee: Employee) => {
+      const todayStr = new Date().toISOString().split('T')[0];
+      const userAttendance = attendance[employee.id] || [];
+      const todayRecord = userAttendance.find(r => r.date === todayStr);
+
+      let updatedAttendance;
+      if (!todayRecord) {
+        // Clock In
+        setNotification('You have been successfully clocked in for the day.');
+        updatedAttendance = { ...attendance, [employee.id]: [...userAttendance, { date: todayStr, checkIn: new Date().toISOString() }] };
+      } else if (todayRecord.checkIn && !todayRecord.checkOut) {
+        // Clock Out
+        setNotification('You have been successfully clocked out. Your hours are recorded.');
+        const updatedRecords = userAttendance.map(r => r.date === todayStr ? { ...r, checkOut: new Date().toISOString() } : r);
+        updatedAttendance = { ...attendance, [employee.id]: updatedRecords };
+      } else {
+         throw new Error('Your attendance for today has already been recorded.');
+      }
+      await api.saveAttendance(updatedAttendance);
+      setAttendance(updatedAttendance);
+  };
+  
   const handleLogout = () => {
     setLoggedInEmployee(null);
   };
 
-  if (employees.length === 0) {
-    return <FirstAdminSetup setEmployees={setEmployees} setLoggedInEmployee={setLoggedInEmployee} />;
+  if (isLoading) {
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+            <div className="text-center">
+                <svg className="mx-auto h-12 w-12 text-indigo-600 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                <p className="mt-4 text-lg font-semibold text-gray-700 dark:text-gray-300">Loading Application Data...</p>
+            </div>
+        </div>
+    );
+  }
+
+  if (isInitialSetup) {
+    return <FirstAdminSetup onAdminCreated={handleAdminCreated} />;
   }
 
   if (!loggedInEmployee) {
@@ -161,8 +219,8 @@ const App: React.FC = () => {
             {notification && <Notification message={notification} />}
             <LoginView 
                 employees={employees} 
-                setLoggedInEmployee={setLoggedInEmployee} 
-                setAttendance={setAttendance} 
+                setLoggedInEmployee={setLoggedInEmployee}
+                onClockEvent={handleClockEvent}
                 setNotification={setNotification}
             />
         </div>
@@ -180,9 +238,9 @@ const App: React.FC = () => {
             employees={employees}
             setEmployees={setEmployees}
             attendance={attendance}
+            setAttendance={setAttendance}
             payslips={payslips}
             setPayslips={setPayslips}
-            setAttendance={setAttendance}
           />
         ) : (
           <EmployeeView
