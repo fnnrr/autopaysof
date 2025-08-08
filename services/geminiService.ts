@@ -1,23 +1,22 @@
 import { GoogleGenAI } from "@google/genai";
 import { Employee } from '../types.ts';
 
-const API_KEY = process.env.API_KEY;
-
-if (!API_KEY) {
-  console.warn("API_KEY environment variable not set. Gemini API features will be disabled.");
-}
-
-const ai = new GoogleGenAI({ apiKey: API_KEY! });
-
 export const generatePayslipSummary = async (
   employee: Employee, 
   netPay: number, 
   totalHours: number, 
   overtimeHours: number
 ): Promise<string> => {
+  // IMPORTANT: API_KEY and the AI client are initialized here to prevent a runtime crash on load
+  // if the environment variable is not set in the deployment environment.
+  const API_KEY = process.env.API_KEY;
+
   if (!API_KEY) {
+    console.warn("API_KEY environment variable not set. Gemini API features will be disabled.");
     return "Payslip summary generation is unavailable. API key is missing.";
   }
+  
+  const ai = new GoogleGenAI({ apiKey: API_KEY });
 
   const prompt = `
     Generate a brief, professional, and encouraging summary for an employee's payslip.
