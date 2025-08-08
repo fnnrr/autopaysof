@@ -1,0 +1,5 @@
+{
+  "name": "AutoPay: Employee & Payslip System",
+  "description": "An integrated system for employee registration, automatic attendance tracking, and payslip generation. Features a dedicated admin panel for managing employee data, including salaries and registration.",
+  "requestFramePermissions": []
+}
